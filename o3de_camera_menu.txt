@@ -1,0 +1,602 @@
+// CameraSettingsMenuComponent.h
+#pragma once
+
+#include <AzCore/Component/Component.h>
+#include <AzCore/Component/TickBus.h>
+#include <AzFramework/Input/Events/InputChannelEventListener.h>
+#include <LyShine/Bus/UiCanvasBus.h>
+#include <LyShine/Bus/UiElementBus.h>
+#include <LyShine/Bus/UiButtonBus.h>
+#include <LyShine/Bus/UiSliderBus.h>
+#include <LyShine/Bus/UiCheckboxBus.h>
+#include <LyShine/Bus/UiTextBus.h>
+
+namespace VehicleCombat
+{
+    // Menu state management
+    enum class MenuPage
+    {
+        Main,
+        CameraSettings,
+        ControlSettings,
+        Accessibility,
+        Advanced,
+        PhotoMode
+    };
+
+    // Profile system for quick camera preset switching
+    struct CameraProfile
+    {
+        AZStd::string name;
+        CameraSettings settings;
+        bool shakeEnabled;
+        bool motionBlurEnabled;
+        bool dynamicEffectsEnabled;
+        CameraMode defaultMode;
+    };
+
+    class CameraSettingsMenuComponent
+        : public AZ::Component
+        , public AZ::TickBus::Handler
+        , public AzFramework::InputChannelEventListener
+        , public UiCanvasNotificationBus::Handler
+        , public UiButtonNotificationBus::MultiHandler
+    {
+    public:
+        AZ_COMPONENT(CameraSettingsMenuComponent, "{87654321-4321-4321-4321-210987654321}");
+
+        static void Reflect(AZ::ReflectContext* context);
+        
+        void Activate() override;
+        void Deactivate() override;
+
+        // TickBus
+        void OnTick(float deltaTime, AZ::ScriptTimePoint time) override;
+
+        // Input handling
+        bool OnInputChannelEventFiltered(const AzFramework::InputChannel& inputChannel) override;
+
+        // UI Callbacks
+        void OnButtonClick() override;
+        
+        // Menu control
+        void OpenMenu();
+        void CloseMenu();
+        void NavigateToPage(MenuPage page);
+        void ToggleMenu();
+        
+        // Settings application
+        void ApplySettings();
+        void ResetToDefaults();
+        void LoadProfile(const AZStd::string& profileName);
+        void SaveProfile(const AZStd::string& profileName);
+
+    private:
+        // UI Creation
+        void CreateMainMenu();
+        void CreateCameraSettingsPage();
+        void CreateControlSettingsPage();
+        void CreateAccessibilityPage();
+        void CreateAdvancedPage();
+        void CreatePhotoModePage();
+        
+        // UI Update
+        void UpdateSliderValues();
+        void UpdateCheckboxes();
+        void UpdatePreviewCamera();
+        void UpdateProfileList();
+        
+        // Helper functions
+        AZ::EntityId CreateButton(AZ::EntityId parent, const AZStd::string& text, 
+            const AZ::Vector2& position, const AZ::Vector2& size);
+        AZ::EntityId CreateSlider(AZ::EntityId parent, const AZStd::string& label,
+            float minValue, float maxValue, float currentValue,
+            const AZ::Vector2& position);
+        AZ::EntityId CreateCheckbox(AZ::EntityId parent, const AZStd::string& label,
+            bool checked, const AZ::Vector2& position);
+        AZ::EntityId CreateText(AZ::EntityId parent, const AZStd::string& text,
+            const AZ::Vector2& position, float fontSize = 24.0f);
+        AZ::EntityId CreateDropdown(AZ::EntityId parent, const AZStd::string& label,
+            const AZStd::vector<AZStd::string>& options, int selected,
+            const AZ::Vector2& position);
+        
+        // Callback handlers
+        void OnSliderValueChanged(AZ::EntityId sliderId, float value);
+        void OnCheckboxChanged(AZ::EntityId checkboxId, bool checked);
+        void OnDropdownChanged(AZ::EntityId dropdownId, int index);
+        
+        // Member variables
+        AZ::EntityId m_canvasEntityId;
+        AZ::EntityId m_vehicleCameraComponent;
+        
+        MenuPage m_currentPage = MenuPage::Main;
+        bool m_menuOpen = false;
+        bool m_pauseGameWhenOpen = true;
+        
+        // UI Element references
+        AZStd::unordered_map<AZStd::string, AZ::EntityId> m_uiElements;
+        
+        // Temporary settings (applied on "Apply" button)
+        CameraSettings m_tempSettings;
+        bool m_tempShakeEnabled = true;
+        bool m_tempMotionBlurEnabled = true;
+        bool m_tempDynamicEffectsEnabled = true;
+        CameraMode m_tempDefaultMode = CameraMode::ThirdPersonChase;
+        
+        // Profiles
+        AZStd::vector<CameraProfile> m_profiles;
+        int m_currentProfileIndex = 0;
+        
+        // Input navigation
+        int m_selectedElementIndex = 0;
+        AZStd::vector<AZ::EntityId> m_navigableElements;
+        
+        // Animation
+        float m_menuAnimationTime = 0.0f;
+        bool m_isAnimating = false;
+    };
+
+    // Implementation
+    void CameraSettingsMenuComponent::Reflect(AZ::ReflectContext* context)
+    {
+        if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
+        {
+            serializeContext->Class<CameraProfile>()
+                ->Version(1)
+                ->Field("Name", &CameraProfile::name)
+                ->Field("Settings", &CameraProfile::settings)
+                ->Field("ShakeEnabled", &CameraProfile::shakeEnabled)
+                ->Field("MotionBlurEnabled", &CameraProfile::motionBlurEnabled)
+                ->Field("DynamicEffectsEnabled", &CameraProfile::dynamicEffectsEnabled)
+                ->Field("DefaultMode", &CameraProfile::defaultMode);
+
+            serializeContext->Class<CameraSettingsMenuComponent, AZ::Component>()
+                ->Version(1)
+                ->Field("VehicleCameraComponent", &CameraSettingsMenuComponent::m_vehicleCameraComponent)
+                ->Field("Profiles", &CameraSettingsMenuComponent::m_profiles);
+        }
+    }
+
+    void CameraSettingsMenuComponent::Activate()
+    {
+        AZ::TickBus::Handler::BusConnect();
+        InputChannelEventListener::Connect();
+        
+        // Initialize default profiles
+        InitializeDefaultProfiles();
+        
+        // Create UI canvas
+        CreateMainMenu();
+    }
+
+    void CameraSettingsMenuComponent::Deactivate()
+    {
+        AZ::TickBus::Handler::BusDisconnect();
+        InputChannelEventListener::Disconnect();
+        
+        if (m_canvasEntityId.IsValid())
+        {
+            UiCanvasNotificationBus::Handler::BusDisconnect(m_canvasEntityId);
+        }
+    }
+
+    void CameraSettingsMenuComponent::CreateMainMenu()
+    {
+        // Load or create UI canvas
+        m_canvasEntityId = UiCanvasManagerBus::Broadcast(
+            &UiCanvasManagerBus::Events::LoadCanvas, 
+            "UI/Canvases/CameraSettingsMenu.uicanvas");
+        
+        if (!m_canvasEntityId.IsValid())
+        {
+            // Create canvas programmatically
+            m_canvasEntityId = UiCanvasManagerBus::Broadcast(
+                &UiCanvasManagerBus::Events::CreateCanvas);
+        }
+        
+        // Get canvas root
+        AZ::EntityId rootElement;
+        UiCanvasBus::EventResult(rootElement, m_canvasEntityId,
+            &UiCanvasBus::Events::GetRootElement);
+        
+        // Create background panel
+        AZ::EntityId bgPanel = UiCanvasBus::Event(m_canvasEntityId,
+            &UiCanvasBus::Events::CreateChildElement, "BackgroundPanel");
+        
+        // Style the background
+        UiImageBus::Event(bgPanel, &UiImageBus::Events::SetColor, 
+            AZ::Color(0.1f, 0.1f, 0.15f, 0.95f));
+        
+        // Main title
+        AZ::EntityId titleText = CreateText(rootElement, "CAMERA SETTINGS", 
+            AZ::Vector2(960.0f, 100.0f), 48.0f);
+        
+        // Main menu buttons - vertical layout
+        float buttonY = 250.0f;
+        float buttonSpacing = 80.0f;
+        AZ::Vector2 buttonSize(400.0f, 60.0f);
+        
+        AZ::EntityId btnCamera = CreateButton(rootElement, "Camera Settings",
+            AZ::Vector2(960.0f, buttonY), buttonSize);
+        m_uiElements["btn_camera_settings"] = btnCamera;
+        buttonY += buttonSpacing;
+        
+        AZ::EntityId btnControls = CreateButton(rootElement, "Control Settings",
+            AZ::Vector2(960.0f, buttonY), buttonSize);
+        m_uiElements["btn_control_settings"] = btnControls;
+        buttonY += buttonSpacing;
+        
+        AZ::EntityId btnAccessibility = CreateButton(rootElement, "Accessibility",
+            AZ::Vector2(960.0f, buttonY), buttonSize);
+        m_uiElements["btn_accessibility"] = btnAccessibility;
+        buttonY += buttonSpacing;
+        
+        AZ::EntityId btnAdvanced = CreateButton(rootElement, "Advanced Settings",
+            AZ::Vector2(960.0f, buttonY), buttonSize);
+        m_uiElements["btn_advanced"] = btnAdvanced;
+        buttonY += buttonSpacing;
+        
+        AZ::EntityId btnPhotoMode = CreateButton(rootElement, "Photo Mode",
+            AZ::Vector2(960.0f, buttonY), buttonSize);
+        m_uiElements["btn_photo_mode"] = btnPhotoMode;
+        buttonY += buttonSpacing;
+        
+        // Quick profile selector at top
+        CreateText(rootElement, "Quick Profile:", AZ::Vector2(200.0f, 100.0f), 24.0f);
+        AZStd::vector<AZStd::string> profileNames;
+        for (const auto& profile : m_profiles)
+        {
+            profileNames.push_back(profile.name);
+        }
+        AZ::EntityId profileDropdown = CreateDropdown(rootElement, "",
+            profileNames, m_currentProfileIndex, AZ::Vector2(400.0f, 100.0f));
+        m_uiElements["dropdown_profile"] = profileDropdown;
+        
+        // Bottom buttons
+        AZ::EntityId btnApply = CreateButton(rootElement, "Apply",
+            AZ::Vector2(760.0f, 950.0f), AZ::Vector2(180.0f, 50.0f));
+        m_uiElements["btn_apply"] = btnApply;
+        
+        AZ::EntityId btnReset = CreateButton(rootElement, "Reset to Defaults",
+            AZ::Vector2(960.0f, 950.0f), AZ::Vector2(200.0f, 50.0f));
+        m_uiElements["btn_reset"] = btnReset;
+        
+        AZ::EntityId btnClose = CreateButton(rootElement, "Close",
+            AZ::Vector2(1160.0f, 950.0f), AZ::Vector2(180.0f, 50.0f));
+        m_uiElements["btn_close"] = btnClose;
+        
+        // Connect button notifications
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnCamera);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnControls);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnAccessibility);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnAdvanced);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnPhotoMode);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnApply);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnReset);
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnClose);
+        
+        // Hide canvas initially
+        UiCanvasBus::Event(m_canvasEntityId, &UiCanvasBus::Events::SetEnabled, false);
+    }
+
+    void CameraSettingsMenuComponent::CreateCameraSettingsPage()
+    {
+        AZ::EntityId rootElement;
+        UiCanvasBus::EventResult(rootElement, m_canvasEntityId,
+            &UiCanvasBus::Events::GetRootElement);
+        
+        // Create page container
+        AZ::EntityId pageContainer = UiCanvasBus::Event(m_canvasEntityId,
+            &UiCanvasBus::Events::CreateChildElement, "CameraSettingsPage");
+        m_uiElements["page_camera"] = pageContainer;
+        
+        // Title
+        CreateText(pageContainer, "Camera Settings", AZ::Vector2(960.0f, 100.0f), 42.0f);
+        
+        float yPos = 200.0f;
+        float spacing = 70.0f;
+        
+        // Camera Mode Dropdown
+        CreateText(pageContainer, "Default Camera Mode:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZStd::vector<AZStd::string> modes = {
+            "Third Person - Dynamic",
+            "Third Person - Fixed",
+            "First Person",
+            "Top Down"
+        };
+        AZ::EntityId modeDropdown = CreateDropdown(pageContainer, "",
+            modes, static_cast<int>(m_tempDefaultMode), AZ::Vector2(700.0f, yPos));
+        m_uiElements["dropdown_camera_mode"] = modeDropdown;
+        yPos += spacing;
+        
+        // Distance Sliders
+        CreateText(pageContainer, "Camera Distance:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId distSlider = CreateSlider(pageContainer, "",
+            3.0f, 15.0f, m_tempSettings.normalDistance, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_distance"] = distSlider;
+        yPos += spacing;
+        
+        // Height Slider
+        CreateText(pageContainer, "Camera Height:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId heightSlider = CreateSlider(pageContainer, "",
+            0.5f, 5.0f, m_tempSettings.normalHeight, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_height"] = heightSlider;
+        yPos += spacing;
+        
+        // FOV Slider
+        CreateText(pageContainer, "Field of View:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId fovSlider = CreateSlider(pageContainer, "",
+            60.0f, 120.0f, m_tempSettings.baseFOV, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_fov"] = fovSlider;
+        yPos += spacing;
+        
+        // Speed FOV Boost Slider
+        CreateText(pageContainer, "Speed FOV Boost:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId speedFovSlider = CreateSlider(pageContainer, "",
+            0.0f, 30.0f, m_tempSettings.speedFOVBoost, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_speed_fov"] = speedFovSlider;
+        yPos += spacing;
+        
+        // Banking Amount Slider
+        CreateText(pageContainer, "Camera Banking:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId bankSlider = CreateSlider(pageContainer, "",
+            0.0f, 1.0f, m_tempSettings.bankingAmount, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_banking"] = bankSlider;
+        yPos += spacing;
+        
+        // Look-Ahead Distance
+        CreateText(pageContainer, "Look-Ahead Distance:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId lookAheadSlider = CreateSlider(pageContainer, "",
+            0.0f, 10.0f, m_tempSettings.lookAheadDistance, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_lookahead"] = lookAheadSlider;
+        yPos += spacing;
+        
+        // Responsiveness Sliders
+        CreateText(pageContainer, "Camera Responsiveness:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId lagSlider = CreateSlider(pageContainer, "",
+            0.05f, 0.5f, m_tempSettings.positionLag, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_responsiveness"] = lagSlider;
+        yPos += spacing;
+        
+        // Combat distance section
+        yPos += 20.0f;
+        CreateText(pageContainer, "--- Combat Settings ---", AZ::Vector2(960.0f, yPos), 28.0f);
+        yPos += spacing;
+        
+        CreateText(pageContainer, "Combat Camera Distance:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId combatDistSlider = CreateSlider(pageContainer, "",
+            4.0f, 20.0f, m_tempSettings.combatDistance, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_combat_distance"] = combatDistSlider;
+        yPos += spacing;
+        
+        CreateText(pageContainer, "Combat Camera Height:", AZ::Vector2(300.0f, yPos), 24.0f);
+        AZ::EntityId combatHeightSlider = CreateSlider(pageContainer, "",
+            1.0f, 6.0f, m_tempSettings.combatHeight, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_combat_height"] = combatHeightSlider;
+        yPos += spacing;
+        
+        // Back button
+        AZ::EntityId btnBack = CreateButton(pageContainer, "< Back",
+            AZ::Vector2(200.0f, 950.0f), AZ::Vector2(150.0f, 50.0f));
+        m_uiElements["btn_back_camera"] = btnBack;
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnBack);
+        
+        // Live preview toggle
+        AZ::EntityId previewCheckbox = CreateCheckbox(pageContainer, "Live Preview",
+            true, AZ::Vector2(1600.0f, 950.0f));
+        m_uiElements["check_live_preview"] = previewCheckbox;
+        
+        // Hide page initially
+        UiElementBus::Event(pageContainer, &UiElementBus::Events::SetIsEnabled, false);
+    }
+
+    void CameraSettingsMenuComponent::CreateAccessibilityPage()
+    {
+        AZ::EntityId rootElement;
+        UiCanvasBus::EventResult(rootElement, m_canvasEntityId,
+            &UiCanvasBus::Events::GetRootElement);
+        
+        AZ::EntityId pageContainer = UiCanvasBus::Event(m_canvasEntityId,
+            &UiCanvasBus::Events::CreateChildElement, "AccessibilityPage");
+        m_uiElements["page_accessibility"] = pageContainer;
+        
+        CreateText(pageContainer, "Accessibility Options", AZ::Vector2(960.0f, 100.0f), 42.0f);
+        
+        float yPos = 250.0f;
+        float spacing = 100.0f;
+        
+        // Camera shake toggle
+        AZ::EntityId shakeCheckbox = CreateCheckbox(pageContainer, 
+            "Enable Camera Shake", m_tempShakeEnabled, AZ::Vector2(400.0f, yPos));
+        CreateText(pageContainer, "Disable if camera movement causes discomfort",
+            AZ::Vector2(700.0f, yPos + 30.0f), 18.0f);
+        m_uiElements["check_shake"] = shakeCheckbox;
+        yPos += spacing;
+        
+        // Motion blur toggle
+        AZ::EntityId blurCheckbox = CreateCheckbox(pageContainer,
+            "Enable Motion Blur", m_tempMotionBlurEnabled, AZ::Vector2(400.0f, yPos));
+        CreateText(pageContainer, "Disable for reduced motion and clarity",
+            AZ::Vector2(700.0f, yPos + 30.0f), 18.0f);
+        m_uiElements["check_motion_blur"] = blurCheckbox;
+        yPos += spacing;
+        
+        // Dynamic effects toggle
+        AZ::EntityId dynamicCheckbox = CreateCheckbox(pageContainer,
+            "Enable Dynamic Camera Effects", m_tempDynamicEffectsEnabled, 
+            AZ::Vector2(400.0f, yPos));
+        CreateText(pageContainer, "Disables banking, swerving, and speed effects",
+            AZ::Vector2(700.0f, yPos + 30.0f), 18.0f);
+        m_uiElements["check_dynamic"] = dynamicCheckbox;
+        yPos += spacing;
+        
+        // Shake intensity (if enabled)
+        CreateText(pageContainer, "Shake Intensity:", AZ::Vector2(400.0f, yPos), 24.0f);
+        AZ::EntityId shakeIntensitySlider = CreateSlider(pageContainer, "",
+            0.0f, 2.0f, m_tempSettings.speedShakeIntensity, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_shake_intensity"] = shakeIntensitySlider;
+        yPos += spacing;
+        
+        // Impact shake intensity
+        CreateText(pageContainer, "Impact Shake Intensity:", AZ::Vector2(400.0f, yPos), 24.0f);
+        AZ::EntityId impactShakeSlider = CreateSlider(pageContainer, "",
+            0.0f, 3.0f, m_tempSettings.impactShakeIntensity, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_impact_shake"] = impactShakeSlider;
+        yPos += spacing;
+        
+        // Fixed camera recommendation
+        yPos += 50.0f;
+        CreateText(pageContainer, "For minimal camera movement, use:", 
+            AZ::Vector2(960.0f, yPos), 24.0f);
+        yPos += 40.0f;
+        CreateText(pageContainer, "• Third Person - Fixed mode", 
+            AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 30.0f;
+        CreateText(pageContainer, "• Disable all options above", 
+            AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 30.0f;
+        CreateText(pageContainer, "• Set all intensity sliders to minimum", 
+            AZ::Vector2(960.0f, yPos), 20.0f);
+        
+        // Quick preset button
+        AZ::EntityId btnMinimalMotion = CreateButton(pageContainer, "Apply Minimal Motion Preset",
+            AZ::Vector2(960.0f, yPos + 60.0f), AZ::Vector2(300.0f, 50.0f));
+        m_uiElements["btn_minimal_motion"] = btnMinimalMotion;
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnMinimalMotion);
+        
+        // Back button
+        AZ::EntityId btnBack = CreateButton(pageContainer, "< Back",
+            AZ::Vector2(200.0f, 950.0f), AZ::Vector2(150.0f, 50.0f));
+        m_uiElements["btn_back_accessibility"] = btnBack;
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnBack);
+        
+        UiElementBus::Event(pageContainer, &UiElementBus::Events::SetIsEnabled, false);
+    }
+
+    void CameraSettingsMenuComponent::CreatePhotoModePage()
+    {
+        AZ::EntityId rootElement;
+        UiCanvasBus::EventResult(rootElement, m_canvasEntityId,
+            &UiCanvasBus::Events::GetRootElement);
+        
+        AZ::EntityId pageContainer = UiCanvasBus::Event(m_canvasEntityId,
+            &UiCanvasBus::Events::CreateChildElement, "PhotoModePage");
+        m_uiElements["page_photo"] = pageContainer;
+        
+        CreateText(pageContainer, "Photo Mode Settings", AZ::Vector2(960.0f, 100.0f), 42.0f);
+        
+        float yPos = 250.0f;
+        float spacing = 80.0f;
+        
+        // Instructions
+        CreateText(pageContainer, "Press F6 to enter Photo Mode during gameplay",
+            AZ::Vector2(960.0f, yPos), 24.0f);
+        yPos += spacing;
+        
+        // Controls display
+        CreateText(pageContainer, "Photo Mode Controls:", AZ::Vector2(960.0f, yPos), 28.0f);
+        yPos += 50.0f;
+        
+        CreateText(pageContainer, "WASD - Move Camera", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "Mouse - Look Around", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "Q/E - Move Up/Down", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "Shift - Move Faster", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "Ctrl - Move Slower", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "F - Toggle Filters", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "H - Hide HUD", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "Enter - Take Screenshot", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 35.0f;
+        CreateText(pageContainer, "Esc - Exit Photo Mode", AZ::Vector2(960.0f, yPos), 20.0f);
+        yPos += 60.0f;
+        
+        // Settings
+        CreateText(pageContainer, "Camera Move Speed:", AZ::Vector2(400.0f, yPos), 24.0f);
+        AZ::EntityId speedSlider = CreateSlider(pageContainer, "",
+            1.0f, 50.0f, 5.0f, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_photo_speed"] = speedSlider;
+        yPos += spacing;
+        
+        CreateText(pageContainer, "Mouse Sensitivity:", AZ::Vector2(400.0f, yPos), 24.0f);
+        AZ::EntityId sensSlider = CreateSlider(pageContainer, "",
+            0.1f, 3.0f, 1.0f, AZ::Vector2(700.0f, yPos));
+        m_uiElements["slider_photo_sensitivity"] = sensSlider;
+        yPos += spacing;
+        
+        // Depth of Field
+        AZ::EntityId dofCheckbox = CreateCheckbox(pageContainer,
+            "Enable Depth of Field", true, AZ::Vector2(400.0f, yPos));
+        m_uiElements["check_photo_dof"] = dofCheckbox;
+        yPos += spacing;
+        
+        // Back button
+        AZ::EntityId btnBack = CreateButton(pageContainer, "< Back",
+            AZ::Vector2(200.0f, 950.0f), AZ::Vector2(150.0f, 50.0f));
+        m_uiElements["btn_back_photo"] = btnBack;
+        UiButtonNotificationBus::MultiHandler::BusConnect(btnBack);
+        
+        UiElementBus::Event(pageContainer, &UiElementBus::Events::SetIsEnabled, false);
+    }
+
+    void CameraSettingsMenuComponent::OnButtonClick()
+    {
+        AZ::EntityId buttonId = *UiButtonNotificationBus::GetCurrentBusId();
+        
+        // Navigate between pages
+        if (buttonId == m_uiElements["btn_camera_settings"])
+        {
+            NavigateToPage(MenuPage::CameraSettings);
+        }
+        else if (buttonId == m_uiElements["btn_accessibility"])
+        {
+            NavigateToPage(MenuPage::Accessibility);
+        }
+        else if (buttonId == m_uiElements["btn_photo_mode"])
+        {
+            NavigateToPage(MenuPage::PhotoMode);
+        }
+        else if (buttonId == m_uiElements["btn_apply"])
+        {
+            ApplySettings();
+        }
+        else if (buttonId == m_uiElements["btn_reset"])
+        {
+            ResetToDefaults();
+        }
+        else if (buttonId == m_uiElements["btn_close"])
+        {
+            CloseMenu();
+        }
+        else if (buttonId == m_uiElements["btn_minimal_motion"])
+        {
+            // Apply minimal motion preset
+            m_tempShakeEnabled = false;
+            m_tempMotionBlurEnabled = false;
+            m_tempDynamicEffectsEnabled = false;
+            m_tempSettings.speedShakeIntensity = 0.0f;
+            m_tempSettings.impactShakeIntensity = 0.0f;
+            m_tempSettings.bankingAmount = 0.0f;
+            m_tempDefaultMode = CameraMode::ThirdPersonFixed;
+            UpdateCheckboxes();
+            UpdateSliderValues();
+        }
+        // Back buttons
+        else if (buttonId == m_uiElements["btn_back_camera"] ||
+                 buttonId == m_uiElements["btn_back_accessibility"] ||
+                 buttonId == m_uiElements["btn_back_photo"])
+        {
+            NavigateToPage(MenuPage::Main);
+        }
+    }
+
+    void CameraSettingsMenuComponent::NavigateToPage(MenuPage page)
+    {
+        // Hide all pages
+        if (m_uiElements.find("page_camera") != m_uiElements.end())
+            UiElementBus::Event(m_uiElements["page_camera"], 

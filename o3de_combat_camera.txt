@@ -1,0 +1,543 @@
+// VehicleCombatCameraComponent.h
+#pragma once
+
+#include <AzCore/Component/Component.h>
+#include <AzCore/Component/TransformBus.h>
+#include <AzCore/Component/TickBus.h>
+#include <AzFramework/Input/Events/InputChannelEventListener.h>
+#include <AtomLyIntegration/CommonFeatures/PostProcess/PostProcessBus.h>
+
+namespace VehicleCombat
+{
+    enum class CameraMode
+    {
+        ThirdPersonChase,      // Dynamic chase cam with banking
+        ThirdPersonFixed,      // More stable, linear view
+        FirstPersonCockpit,    // Interior view
+        TopDown,               // Tactical overhead view
+        CinematicAction,       // Dynamic cinematic for replays
+        PhotoMode              // Free camera for screenshots
+    };
+
+    enum class CombatState
+    {
+        Cruising,              // No immediate threats
+        Combat,                // Active engagement
+        Aiming,                // Precision targeting mode
+        Damaged               // Heavy damage feedback
+    };
+
+    struct CameraSettings
+    {
+        // Follow distances
+        float normalDistance = 6.5f;
+        float combatDistance = 7.5f;
+        float aimDistance = 8.0f;
+        
+        // Heights
+        float normalHeight = 2.0f;
+        float combatHeight = 2.5f;
+        
+        // FOV settings
+        float baseFOV = 90.0f;
+        float speedFOVBoost = 15.0f;
+        float aimFOV = 75.0f;
+        
+        // Responsiveness
+        float positionLag = 0.15f;
+        float rotationLag = 0.12f;
+        float fastRotationLag = 0.08f;  // For quick look-backs
+        
+        // Dynamic effects
+        float speedShakeIntensity = 0.3f;
+        float impactShakeIntensity = 1.5f;
+        float bankingAmount = 0.25f;
+        float velocityTilt = 0.15f;
+        
+        // Look-ahead
+        float lookAheadDistance = 3.0f;
+        float lookAheadSpeed = 0.2f;
+        
+        // Collision avoidance
+        float minDistance = 2.0f;
+        float maxDistance = 15.0f;
+    };
+
+    struct CameraShake
+    {
+        AZ::Vector3 translationOffset;
+        AZ::Vector3 rotationOffset;
+        float intensity = 0.0f;
+        float duration = 0.0f;
+        float frequency = 10.0f;
+        
+        void Update(float deltaTime)
+        {
+            if (intensity <= 0.0f) return;
+            
+            duration -= deltaTime;
+            if (duration <= 0.0f)
+            {
+                intensity = 0.0f;
+                translationOffset = AZ::Vector3::CreateZero();
+                rotationOffset = AZ::Vector3::CreateZero();
+                return;
+            }
+            
+            // Perlin-style shake
+            float t = duration * frequency;
+            translationOffset.SetX(sinf(t * 1.2f) * intensity);
+            translationOffset.SetY(sinf(t * 0.8f) * intensity);
+            translationOffset.SetZ(cosf(t * 1.5f) * intensity * 0.5f);
+            
+            rotationOffset.SetX(sinf(t * 1.1f) * intensity * 0.5f);
+            rotationOffset.SetY(cosf(t * 0.9f) * intensity * 0.3f);
+            rotationOffset.SetZ(sinf(t * 1.3f) * intensity * 0.4f);
+            
+            // Decay
+            intensity *= 0.95f;
+        }
+    };
+
+    class VehicleCombatCameraComponent
+        : public AZ::Component
+        , public AZ::TickBus::Handler
+        , public AzFramework::InputChannelEventListener
+    {
+    public:
+        AZ_COMPONENT(VehicleCombatCameraComponent, "{12345678-1234-1234-1234-123456789012}");
+
+        static void Reflect(AZ::ReflectContext* context);
+        static void GetProvidedServices(AZ::ComponentDescriptor::DependencyArrayType& provided);
+        static void GetRequiredServices(AZ::ComponentDescriptor::DependencyArrayType& required);
+
+        // Component overrides
+        void Activate() override;
+        void Deactivate() override;
+
+        // TickBus
+        void OnTick(float deltaTime, AZ::ScriptTimePoint time) override;
+
+        // Input handling
+        bool OnInputChannelEventFiltered(const AzFramework::InputChannel& inputChannel) override;
+
+        // Camera control methods
+        void CycleCameraMode();
+        void SetCameraMode(CameraMode mode);
+        void SetCombatState(CombatState state);
+        void ApplyImpactShake(const AZ::Vector3& impactDirection, float force);
+        void SetTargetEntity(AZ::EntityId targetId);
+        
+        // Accessibility options
+        void SetShakeEnabled(bool enabled) { m_shakeEnabled = enabled; }
+        void SetMotionBlurEnabled(bool enabled) { m_motionBlurEnabled = enabled; }
+        void SetDynamicEffectsEnabled(bool enabled) { m_dynamicEffectsEnabled = enabled; }
+
+    private:
+        // Core camera logic
+        void UpdateThirdPersonCamera(float deltaTime);
+        void UpdateFirstPersonCamera(float deltaTime);
+        void UpdateTopDownCamera(float deltaTime);
+        void UpdatePhotoModeCamera(float deltaTime);
+        
+        // Helper functions
+        AZ::Vector3 CalculateIdealPosition(float deltaTime);
+        AZ::Quaternion CalculateIdealRotation(float deltaTime);
+        void ApplyCameraEffects(float deltaTime);
+        void HandleCollisionAvoidance(AZ::Vector3& position);
+        float CalculateDynamicFOV();
+        void UpdateLookAhead(float deltaTime);
+        void ApplyBanking(AZ::Quaternion& rotation, float deltaTime);
+        void UpdateCombatTracking(float deltaTime);
+        
+        // Streaming and LOD
+        void UpdateStreamingPriority();
+        void SetDrawDistance(float distance);
+
+        // Member variables
+        CameraMode m_currentMode = CameraMode::ThirdPersonChase;
+        CameraMode m_previousMode = CameraMode::ThirdPersonChase;
+        CombatState m_combatState = CombatState::Cruising;
+        
+        CameraSettings m_settings;
+        CameraShake m_shake;
+        
+        AZ::EntityId m_vehicleEntity;
+        AZ::EntityId m_cameraEntity;
+        AZ::EntityId m_targetEntity;
+        
+        // Smoothed values
+        AZ::Vector3 m_currentPosition;
+        AZ::Quaternion m_currentRotation;
+        AZ::Vector3 m_lookAheadPoint;
+        float m_currentFOV = 90.0f;
+        
+        // Vehicle state tracking
+        AZ::Vector3 m_vehicleVelocity;
+        float m_vehicleSpeed = 0.0f;
+        float m_previousSpeed = 0.0f;
+        AZ::Vector3 m_angularVelocity;
+        
+        // Input state
+        float m_lookHorizontal = 0.0f;
+        float m_lookVertical = 0.0f;
+        bool m_lookBackPressed = false;
+        
+        // Photo mode state
+        AZ::Vector3 m_photoModePosition;
+        AZ::Quaternion m_photoModeRotation;
+        float m_photoModeMoveSpeed = 5.0f;
+        
+        // Settings
+        bool m_shakeEnabled = true;
+        bool m_motionBlurEnabled = true;
+        bool m_dynamicEffectsEnabled = true;
+        
+        // Performance
+        float m_streamingRadius = 500.0f;
+        float m_detailRadius = 100.0f;
+    };
+
+    // Implementation
+    void VehicleCombatCameraComponent::Reflect(AZ::ReflectContext* context)
+    {
+        if (auto serializeContext = azrtti_cast<AZ::SerializeContext*>(context))
+        {
+            serializeContext->Class<CameraSettings>()
+                ->Version(1)
+                ->Field("NormalDistance", &CameraSettings::normalDistance)
+                ->Field("CombatDistance", &CameraSettings::combatDistance)
+                ->Field("NormalHeight", &CameraSettings::normalHeight)
+                ->Field("BaseFOV", &CameraSettings::baseFOV)
+                ->Field("SpeedShakeIntensity", &CameraSettings::speedShakeIntensity)
+                ->Field("BankingAmount", &CameraSettings::bankingAmount);
+
+            serializeContext->Class<VehicleCombatCameraComponent, AZ::Component>()
+                ->Version(1)
+                ->Field("VehicleEntity", &VehicleCombatCameraComponent::m_vehicleEntity)
+                ->Field("CameraEntity", &VehicleCombatCameraComponent::m_cameraEntity)
+                ->Field("Settings", &VehicleCombatCameraComponent::m_settings);
+        }
+    }
+
+    void VehicleCombatCameraComponent::Activate()
+    {
+        AZ::TickBus::Handler::BusConnect();
+        InputChannelEventListener::Connect();
+        
+        // Initialize camera position to vehicle position
+        AZ::TransformBus::EventResult(m_currentPosition, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldTranslation);
+        AZ::TransformBus::EventResult(m_currentRotation, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldRotationQuaternion);
+    }
+
+    void VehicleCombatCameraComponent::Deactivate()
+    {
+        AZ::TickBus::Handler::BusDisconnect();
+        InputChannelEventListener::Disconnect();
+    }
+
+    void VehicleCombatCameraComponent::OnTick(float deltaTime, AZ::ScriptTimePoint time)
+    {
+        // Update vehicle state
+        AZ::Vector3 currentVehiclePos;
+        AZ::TransformBus::EventResult(currentVehiclePos, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldTranslation);
+        
+        m_vehicleVelocity = (currentVehiclePos - m_currentPosition) / deltaTime;
+        m_previousSpeed = m_vehicleSpeed;
+        m_vehicleSpeed = m_vehicleVelocity.GetLength();
+        
+        // Update shake
+        m_shake.Update(deltaTime);
+        
+        // Update based on camera mode
+        switch (m_currentMode)
+        {
+            case CameraMode::ThirdPersonChase:
+            case CameraMode::ThirdPersonFixed:
+                UpdateThirdPersonCamera(deltaTime);
+                break;
+            case CameraMode::FirstPersonCockpit:
+                UpdateFirstPersonCamera(deltaTime);
+                break;
+            case CameraMode::TopDown:
+                UpdateTopDownCamera(deltaTime);
+                break;
+            case CameraMode::PhotoMode:
+                UpdatePhotoModeCamera(deltaTime);
+                break;
+        }
+        
+        // Update streaming priority
+        UpdateStreamingPriority();
+    }
+
+    void VehicleCombatCameraComponent::UpdateThirdPersonCamera(float deltaTime)
+    {
+        // Calculate ideal camera position
+        AZ::Vector3 idealPos = CalculateIdealPosition(deltaTime);
+        AZ::Quaternion idealRot = CalculateIdealRotation(deltaTime);
+        
+        // Apply look-ahead for better cornering
+        UpdateLookAhead(deltaTime);
+        
+        // Collision avoidance
+        HandleCollisionAvoidance(idealPos);
+        
+        // Smooth interpolation
+        float posLag = m_lookBackPressed ? m_settings.fastRotationLag : m_settings.positionLag;
+        float rotLag = m_combatState == CombatState::Aiming ? 
+            m_settings.fastRotationLag : m_settings.rotationLag;
+        
+        m_currentPosition = AZ::Vector3::Lerp(m_currentPosition, idealPos, 
+            1.0f - powf(posLag, deltaTime * 60.0f));
+        m_currentRotation = m_currentRotation.Slerp(idealRot, 
+            1.0f - powf(rotLag, deltaTime * 60.0f));
+        
+        // Apply dynamic effects
+        if (m_dynamicEffectsEnabled && m_currentMode == CameraMode::ThirdPersonChase)
+        {
+            ApplyBanking(m_currentRotation, deltaTime);
+            ApplyCameraEffects(deltaTime);
+        }
+        
+        // Update FOV
+        m_currentFOV = CalculateDynamicFOV();
+        
+        // Apply shake if enabled
+        if (m_shakeEnabled)
+        {
+            m_currentPosition += m_shake.translationOffset;
+            AZ::Quaternion shakeRot = AZ::Quaternion::CreateFromEulerAnglesDegrees(m_shake.rotationOffset);
+            m_currentRotation = m_currentRotation * shakeRot;
+        }
+        
+        // Update camera transform
+        AZ::TransformBus::Event(m_cameraEntity, 
+            &AZ::TransformBus::Events::SetWorldTranslation, m_currentPosition);
+        AZ::TransformBus::Event(m_cameraEntity,
+            &AZ::TransformBus::Events::SetWorldRotationQuaternion, m_currentRotation);
+    }
+
+    AZ::Vector3 VehicleCombatCameraComponent::CalculateIdealPosition(float deltaTime)
+    {
+        AZ::Vector3 vehiclePos;
+        AZ::Quaternion vehicleRot;
+        AZ::TransformBus::EventResult(vehiclePos, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldTranslation);
+        AZ::TransformBus::EventResult(vehicleRot, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldRotationQuaternion);
+        
+        // Determine camera distance based on state
+        float distance = m_settings.normalDistance;
+        float height = m_settings.normalHeight;
+        
+        switch (m_combatState)
+        {
+            case CombatState::Combat:
+                distance = m_settings.combatDistance;
+                height = m_settings.combatHeight;
+                break;
+            case CombatState::Aiming:
+                distance = m_settings.aimDistance;
+                break;
+        }
+        
+        // Handle look-back
+        if (m_lookBackPressed)
+        {
+            distance *= 0.8f;  // Closer when looking back
+        }
+        
+        // Calculate base offset
+        AZ::Vector3 forward = vehicleRot.TransformVector(AZ::Vector3(1.0f, 0.0f, 0.0f));
+        AZ::Vector3 right = vehicleRot.TransformVector(AZ::Vector3(0.0f, 1.0f, 0.0f));
+        AZ::Vector3 up = AZ::Vector3(0.0f, 0.0f, 1.0f);
+        
+        AZ::Vector3 offset = -forward * distance + up * height;
+        
+        // Add look-ahead offset for better cornering visibility
+        offset += m_lookAheadPoint * m_settings.lookAheadSpeed;
+        
+        return vehiclePos + offset;
+    }
+
+    AZ::Quaternion VehicleCombatCameraComponent::CalculateIdealRotation(float deltaTime)
+    {
+        AZ::Vector3 vehiclePos;
+        AZ::Quaternion vehicleRot;
+        AZ::TransformBus::EventResult(vehiclePos, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldTranslation);
+        AZ::TransformBus::EventResult(vehicleRot, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldRotationQuaternion);
+        
+        AZ::Vector3 lookTarget = vehiclePos;
+        
+        // If tracking a target, adjust look direction
+        if (m_targetEntity.IsValid())
+        {
+            AZ::Vector3 targetPos;
+            AZ::TransformBus::EventResult(targetPos, m_targetEntity,
+                &AZ::TransformBus::Events::GetWorldTranslation);
+            
+            // Blend between vehicle and target based on combat state
+            float targetWeight = (m_combatState == CombatState::Aiming) ? 0.6f : 0.3f;
+            lookTarget = AZ::Vector3::Lerp(vehiclePos, targetPos, targetWeight);
+        }
+        
+        // Add forward bias
+        AZ::Vector3 forward = vehicleRot.TransformVector(AZ::Vector3(1.0f, 0.0f, 0.0f));
+        lookTarget += forward * m_settings.lookAheadDistance;
+        
+        // Calculate rotation to look at target
+        AZ::Vector3 direction = (lookTarget - m_currentPosition).GetNormalized();
+        return AZ::Quaternion::CreateShortestArc(AZ::Vector3(1.0f, 0.0f, 0.0f), direction);
+    }
+
+    void VehicleCombatCameraComponent::ApplyBanking(AZ::Quaternion& rotation, float deltaTime)
+    {
+        // Calculate banking based on angular velocity
+        AZ::Vector3 vehicleAngVel;
+        // In real implementation, get this from physics component
+        // For now, estimate from rotation change
+        
+        float bankAngle = m_angularVelocity.GetZ() * m_settings.bankingAmount;
+        AZ::Quaternion bankRot = AZ::Quaternion::CreateFromAxisAngle(
+            AZ::Vector3(1.0f, 0.0f, 0.0f), bankAngle);
+        
+        rotation = rotation * bankRot;
+    }
+
+    void VehicleCombatCameraComponent::ApplyCameraEffects(float deltaTime)
+    {
+        // Speed-based shake
+        if (m_vehicleSpeed > 10.0f)
+        {
+            float speedFactor = AZ::GetClamp(m_vehicleSpeed / 50.0f, 0.0f, 1.0f);
+            m_shake.intensity += speedFactor * m_settings.speedShakeIntensity * deltaTime;
+            m_shake.duration = 0.1f;
+            m_shake.frequency = 15.0f + speedFactor * 10.0f;
+        }
+    }
+
+    void VehicleCombatCameraComponent::ApplyImpactShake(const AZ::Vector3& impactDirection, float force)
+    {
+        m_shake.intensity = force * m_settings.impactShakeIntensity;
+        m_shake.duration = 0.5f;
+        m_shake.frequency = 20.0f;
+    }
+
+    float VehicleCombatCameraComponent::CalculateDynamicFOV()
+    {
+        float targetFOV = m_settings.baseFOV;
+        
+        // Increase FOV with speed
+        if (m_combatState != CombatState::Aiming)
+        {
+            float speedFactor = AZ::GetClamp(m_vehicleSpeed / 50.0f, 0.0f, 1.0f);
+            targetFOV += speedFactor * m_settings.speedFOVBoost;
+        }
+        else
+        {
+            targetFOV = m_settings.aimFOV;
+        }
+        
+        // Smooth transition
+        return AZ::Lerp(m_currentFOV, targetFOV, 0.1f);
+    }
+
+    void VehicleCombatCameraComponent::UpdateLookAhead(float deltaTime)
+    {
+        if (m_vehicleSpeed < 1.0f) return;
+        
+        AZ::Vector3 velocityDir = m_vehicleVelocity.GetNormalized();
+        AZ::Vector3 targetLookAhead = velocityDir * m_settings.lookAheadDistance;
+        
+        m_lookAheadPoint = AZ::Vector3::Lerp(m_lookAheadPoint, targetLookAhead,
+            deltaTime * 2.0f);
+    }
+
+    void VehicleCombatCameraComponent::HandleCollisionAvoidance(AZ::Vector3& position)
+    {
+        // Raycast from vehicle to camera position
+        // If collision, move camera closer
+        // Implementation requires O3DE physics raycast
+        
+        AZ::Vector3 vehiclePos;
+        AZ::TransformBus::EventResult(vehiclePos, m_vehicleEntity,
+            &AZ::TransformBus::Events::GetWorldTranslation);
+        
+        AZ::Vector3 toCamera = position - vehiclePos;
+        float distance = toCamera.GetLength();
+        
+        // Clamp distance
+        if (distance > m_settings.maxDistance)
+        {
+            position = vehiclePos + toCamera.GetNormalized() * m_settings.maxDistance;
+        }
+        else if (distance < m_settings.minDistance)
+        {
+            position = vehiclePos + toCamera.GetNormalized() * m_settings.minDistance;
+        }
+    }
+
+    void VehicleCombatCameraComponent::UpdateStreamingPriority()
+    {
+        // Set streaming priority based on camera position and velocity
+        // Higher priority for assets in front of camera
+        // Implementation specific to O3DE asset streaming system
+        
+        float priorityRadius = m_streamingRadius + (m_vehicleSpeed * 2.0f);
+        SetDrawDistance(priorityRadius);
+    }
+
+    void VehicleCombatCameraComponent::CycleCameraMode()
+    {
+        int nextMode = (static_cast<int>(m_currentMode) + 1) % 4;
+        SetCameraMode(static_cast<CameraMode>(nextMode));
+    }
+
+    void VehicleCombatCameraComponent::SetCameraMode(CameraMode mode)
+    {
+        m_previousMode = m_currentMode;
+        m_currentMode = mode;
+        
+        // Adjust settings per mode
+        if (mode == CameraMode::ThirdPersonFixed)
+        {
+            m_settings.bankingAmount = 0.0f;
+            m_settings.speedShakeIntensity = 0.1f;
+        }
+        else if (mode == CameraMode::ThirdPersonChase)
+        {
+            m_settings.bankingAmount = 0.25f;
+            m_settings.speedShakeIntensity = 0.3f;
+        }
+    }
+
+    bool VehicleCombatCameraComponent::OnInputChannelEventFiltered(
+        const AzFramework::InputChannel& inputChannel)
+    {
+        const AzFramework::InputChannelId& channelId = inputChannel.GetInputChannelId();
+        
+        // Cycle camera mode
+        if (channelId == AzFramework::InputDeviceKeyboard::Key::AlphanumericC &&
+            inputChannel.IsStateBegan())
+        {
+            CycleCameraMode();
+            return true;
+        }
+        
+        // Look back
+        if (channelId == AzFramework::InputDeviceGamepad::Button::RB)
+        {
+            m_lookBackPressed = inputChannel.IsActive();
+            return true;
+        }
+        
+        return false;
+    }
+
+} // namespace VehicleCombat
